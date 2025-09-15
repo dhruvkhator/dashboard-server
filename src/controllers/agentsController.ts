@@ -75,12 +75,23 @@ export async function updateTheme(req: Request, res: Response) {
     const admin = await isAdminUser(req);
     if (!admin && (!actor || actor.id !== agent.org_id)) return res.status(403).send('forbidden');
 
-    // get latest version
-    const latest = await sbRest(`/agent_themes?agent_id=eq.${agent_id}&select=version&order=version.desc&limit=1`, { method: 'GET' });
-    const nextVersion = latest?.[0]?.version ? Number(latest[0].version) + 1 : 1;
-    const insertPayload = { agent_id, config, version: nextVersion };
-    const rows = await sbRest(`/agent_themes`, { method: 'POST', body: JSON.stringify([insertPayload]) });
-    const inserted = rows?.[0] || insertPayload;
+    // one-row-per-agent model (unique constraint on agent_id)
+    const existingRows = await sbRest(`/agent_themes?agent_id=eq.${agent_id}&select=id,version`, { method: 'GET' });
+    const existing = existingRows?.[0] as { id: string; version?: number } | undefined;
+    let nextVersion = 1;
+    let result: any = null;
+    if (existing) {
+      nextVersion = existing.version ? Number(existing.version) + 1 : 1;
+      const patch = { config, version: nextVersion } as any;
+      const updRows = await sbRest(`/agent_themes?agent_id=eq.${agent_id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+      result = updRows?.[0] || { agent_id, ...patch };
+    } else {
+      nextVersion = 1;
+      const insertPayload = { agent_id, config, version: nextVersion } as any;
+      const insRows = await sbRest(`/agent_themes`, { method: 'POST', body: JSON.stringify([insertPayload]) });
+      result = insRows?.[0] || insertPayload;
+    }
+
     await audit('theme.update', {
       org_id: agent.org_id,
       user_id: actor?.id,
@@ -88,7 +99,7 @@ export async function updateTheme(req: Request, res: Response) {
       target: `agent:${agent_id}`,
       version: nextVersion
     });
-    res.json(inserted);
+    res.json(result);
   } catch (e: any) {
     res.status(500).send(e?.message || 'server_error');
   }
@@ -168,6 +179,38 @@ export async function getLatestTheme(req: Request, res: Response) {
   try {
     const { agentId } = req.params as { agentId: string };
     const rows = await sbRest(`/agent_themes?agent_id=eq.${agentId}&select=*&order=version.desc&limit=1`, { method: 'GET' });
+    const theme = rows?.[0] || null;
+    if (!theme) return res.status(404).send('not_found');
+    res.json(theme);
+  } catch (e: any) {
+    res.status(500).send(e?.message || 'server_error');
+  }
+}
+
+// Public endpoints (by public_id)
+export async function getPublicAgentByPublicId(req: Request, res: Response) {
+  try {
+    const { publicId } = req.params as { publicId: string };
+    if (!publicId) return res.status(400).send('public_id_required');
+    // Return minimal fields required by widget; exclude deleted
+    const rows = await sbRest(`/agents?public_id=eq.${publicId}&deleted_at=is.null&select=id,public_id,name,domains,status`, { method: 'GET' });
+    const agent = rows?.[0] || null;
+    if (!agent) return res.status(404).send('not_found');
+    res.json(agent);
+  } catch (e: any) {
+    res.status(500).send(e?.message || 'server_error');
+  }
+}
+
+export async function getPublicThemeByPublicId(req: Request, res: Response) {
+  try {
+    const { publicId } = req.params as { publicId: string };
+    if (!publicId) return res.status(400).send('public_id_required');
+    // Lookup agent id then get latest theme
+    const agents = await sbRest(`/agents?public_id=eq.${publicId}&deleted_at=is.null&select=id`, { method: 'GET' });
+    const agent = agents?.[0];
+    if (!agent?.id) return res.status(404).send('not_found');
+    const rows = await sbRest(`/agent_themes?agent_id=eq.${agent.id}&select=*&order=version.desc&limit=1`, { method: 'GET' });
     const theme = rows?.[0] || null;
     if (!theme) return res.status(404).send('not_found');
     res.json(theme);

@@ -15,6 +15,9 @@ export function createApp() {
   // Increase JSON body limit to accommodate theme configs (e.g., base64 logos)
   app.use(express.json({ limit: '5mb' }));
 
+  // Minimal test widget loader served as a single file
+
+
   app.use('/auth', authRoutes);
   // Edit-access feature deferred; endpoints disabled for now
   // app.use('/access', accessRoutes);
